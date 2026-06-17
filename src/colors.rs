@@ -1,19 +1,20 @@
 use facet::Facet;
+use image::Primitive;
+use itertools::Itertools;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
 #[derive(Facet, Debug, Clone, PartialEq)]
-pub struct ColorSchemeCollection {
-    pub version: String,
-    pub latte: Theme,
-    pub frappe: Theme,
-    pub macchiato: Theme,
-    pub mocha: Theme,
+struct ColorSchemeCollection {
+    latte: Theme,
+    frappe: Theme,
+    macchiato: Theme,
+    mocha: Theme,
 }
 
 impl ColorSchemeCollection {
-    pub fn from_json_file(path: impl AsRef<Path>) -> Self {
+    fn from_json_file(path: impl AsRef<Path>) -> Self {
         let json = fs::read_to_string(&path).expect("Unable to read file");
         let res = facet_json::from_str::<Self>(&json);
         if res.is_err() {
@@ -26,71 +27,29 @@ impl ColorSchemeCollection {
 }
 
 #[derive(Facet, Debug, Clone, PartialEq)]
-pub struct Theme {
-    pub name: String,
-    pub emoji: String,
-    pub order: u32,
-    pub dark: bool,
-    pub colors: HashMap<String, PaletteColor>,
-    #[facet(rename = "ansiColors")]
-    pub ansi_colors: HashMap<String, AnsiColorPair>,
+struct Theme {
+    colors: HashMap<String, PaletteColor>,
 }
 
 #[derive(Facet, Debug, Clone, PartialEq)]
-pub struct PaletteColor {
-    pub name: String,
-    pub order: u32,
-    pub hex: String,
-    pub rgb: Rgb,
-    pub hsl: Hsl,
-    pub oklch: Oklch,
-    pub accent: bool,
+struct PaletteColor {
+    hex: String,
+    oklch: Oklch,
+    accent: bool,
 }
 
 #[derive(Facet, Debug, Clone, PartialEq)]
-pub struct AnsiColorPair {
-    pub name: String,
-    pub order: u32,
-    pub normal: AnsiColorDetails,
-    pub bright: AnsiColorDetails,
+struct Oklch {
+    l: f32,
+    c: f32,
+    h: f32,
 }
 
-#[derive(Facet, Debug, Clone, PartialEq)]
-pub struct AnsiColorDetails {
-    pub name: String,
-    pub hex: String,
-    pub rgb: Rgb,
-    pub hsl: Hsl,
-    pub oklch: Oklch,
-    pub code: u32,
-}
-
-#[derive(Facet, Debug, Clone, PartialEq)]
-pub struct Rgb {
-    pub r: u8,
-    pub g: u8,
-    pub b: u8,
-}
-
-#[derive(Facet, Debug, Clone, PartialEq)]
-pub struct Hsl {
-    pub h: f64,
-    pub s: f64,
-    pub l: f64,
-}
-
-#[derive(Facet, Debug, Clone, PartialEq)]
-pub struct Oklch {
-    pub l: f64,
-    pub c: f64,
-    pub h: f64,
-}
-
-pub fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals) {
+pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals) {
     let color_scheme_collection = ColorSchemeCollection::from_json_file(file_path);
 
-    let mut accents = Vec::new();
-    let mut neutrals = Vec::new();
+    let mut accents = HashMap::new();
+    let mut neutrals = HashMap::new();
 
     let themes = {
         let ColorSchemeCollection {
@@ -114,29 +73,80 @@ pub fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals) {
     themes
         .into_values()
         .map(|theme| {
-            theme
-                .colors
-                .into_values()
-                .map(|PaletteColor { accent, oklch, .. }| (accent, oklch))
+            theme.colors.into_values().map(
+                |PaletteColor {
+                     accent, oklch, hex, ..
+                 }| (accent, oklch, hex),
+            )
         })
         .flatten()
-        .map(|(accent, Oklch { l, c, h })| (accent, Oklch { l, c, h }))
-        .for_each(|(accent, color)| {
+        .map(|(accent, Oklch { l, c, h }, hex)| (accent, Oklch { l, c, h }, hex))
+        .for_each(|(accent, color, hex)| {
             if accent {
-                accents.push(color)
+                accents.insert(hex, color);
             } else {
-                neutrals.push(color)
+                neutrals.insert(hex, color);
             }
         });
 
-    let accents = Accents(accents);
-    let neutrals = Neutrals(neutrals);
+    let accents = Accents(
+        accents
+            .into_values()
+            .map(|Oklch { l, c, h }| palette::Oklch {
+                l,
+                chroma: c,
+                hue: palette::OklabHue::from(h),
+            })
+            .collect(),
+    );
+    let neutrals = Neutrals(
+        neutrals
+            .into_values()
+            .map(|Oklch { l, c, h }| palette::Oklch {
+                l,
+                chroma: c,
+                hue: palette::OklabHue::from(h),
+            })
+            .collect(),
+    );
 
     (accents, neutrals)
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Accents(pub Vec<Oklch>);
+pub enum Accent {
+    Solid(palette::Oklch),
+    Duo {
+        from: palette::Oklch,
+        t: f32,
+        to: palette::Oklch,
+    },
+}
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Neutrals(pub Vec<Oklch>);
+pub struct Accents(Vec<palette::Oklch>);
+
+impl Accents {
+    pub fn find_closest(&self, needle: palette::Oklch) -> Accent {
+        todo!("Accents::find_closest")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Neutrals(Vec<palette::Oklch>);
+
+impl Neutrals {
+    pub fn find_closest(&self, needle: palette::Oklch) -> palette::Oklch {
+        self.0
+            .iter()
+            .cloned()
+            .min_by(|a, b| {
+                let dist_a = (needle.l - a.l).powi(2) + (needle.chroma - a.chroma).powi(2);
+                let dist_b = (needle.l - b.l).powi(2) + (needle.chroma - b.chroma).powi(2);
+
+                dist_a
+                    .partial_cmp(&dist_b)
+                    .expect("Encountered NaN in Neutrals::find_closest")
+            })
+            .expect("Neutrals had 0 colors")
+    }
+}
