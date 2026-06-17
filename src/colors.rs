@@ -1,8 +1,12 @@
+use crate::noise::NoiseMaps;
 use facet::Facet;
 use image::Primitive;
 use itertools::Itertools;
+use kiddo::{ImmutableKdTree, KdTree, SquaredEuclidean};
+use palette::{GetHue, Mix, Oklch};
 use std::collections::HashMap;
 use std::fs;
+use std::ops::Deref;
 use std::path::Path;
 
 #[derive(Facet, Debug, Clone, PartialEq)]
@@ -34,18 +38,20 @@ struct Theme {
 #[derive(Facet, Debug, Clone, PartialEq)]
 struct PaletteColor {
     hex: String,
-    oklch: Oklch,
+    oklch: MyOklch,
     accent: bool,
 }
 
 #[derive(Facet, Debug, Clone, PartialEq)]
-struct Oklch {
+struct MyOklch {
     l: f32,
     c: f32,
     h: f32,
 }
 
 pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals) {
+    println!("Extracting Colors");
+
     let color_scheme_collection = ColorSchemeCollection::from_json_file(file_path);
 
     let mut accents = HashMap::new();
@@ -70,7 +76,7 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
         map
     };
 
-    themes
+    for (accent, color, hex) in themes
         .into_values()
         .map(|theme| {
             theme.colors.into_values().map(
@@ -80,29 +86,62 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
             )
         })
         .flatten()
-        .map(|(accent, Oklch { l, c, h }, hex)| (accent, Oklch { l, c, h }, hex))
-        .for_each(|(accent, color, hex)| {
-            if accent {
-                accents.insert(hex, color);
-            } else {
-                neutrals.insert(hex, color);
-            }
-        });
+        .map(|(accent, MyOklch { l, c, h }, hex)| (accent, MyOklch { l, c, h }, hex))
+    {
+        if accent {
+            accents.insert(hex.clone(), color.clone());
+        }
+        neutrals.insert(hex, color);
+    }
 
-    let accents = Accents(
-        accents
-            .into_values()
-            .map(|Oklch { l, c, h }| palette::Oklch {
-                l,
-                chroma: c,
-                hue: palette::OklabHue::from(h),
-            })
-            .collect(),
-    );
+    println!("Generating palette");
+    let solid_accents = accents
+        .into_values()
+        .map(|MyOklch { l, c, h }| Oklch {
+            l,
+            chroma: c,
+            hue: palette::OklabHue::from(h),
+        })
+        .map(|c| Accent::Solid(c))
+        .collect::<Vec<_>>();
+    let duo_accents = solid_accents
+        .iter()
+        .cartesian_product(solid_accents.iter())
+        .cartesian_product(1..10u8)
+        .flat_map(|((a, b), layer)| match (a, b) {
+            (Accent::Solid(a), Accent::Solid(b)) if a != b => {
+                let t = layer as f32 / 10.0;
+                Some(Accent::Duo {
+                    from: *a,
+                    factor: t,
+                    to: *b,
+                })
+            }
+            (Accent::Solid(a), Accent::Solid(b)) if a == b => None,
+            _ => unreachable!(),
+        })
+        .collect::<Vec<_>>();
+    let accent_colors = solid_accents
+        .into_iter()
+        .chain(duo_accents.into_iter())
+        .collect::<Vec<_>>();
+    let accents_tree_slice = accent_colors
+        .iter()
+        .map(|accent| {
+            let Oklch { l, chroma, hue } = accent.get();
+            [l, chroma, hue.into_degrees()]
+        })
+        .collect::<Vec<_>>();
+    let accents_tree = ImmutableKdTree::new_from_slice(&accents_tree_slice);
+    let accents = Accents {
+        tree: accents_tree,
+        colors: accent_colors,
+    };
+
     let neutrals = Neutrals(
         neutrals
             .into_values()
-            .map(|Oklch { l, c, h }| palette::Oklch {
+            .map(|MyOklch { l, c, h }| Oklch {
                 l,
                 chroma: c,
                 hue: palette::OklabHue::from(h),
@@ -113,29 +152,52 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
     (accents, neutrals)
 }
 
+#[derive(Debug, Clone, PartialEq, Copy)]
 pub enum Accent {
-    Solid(palette::Oklch),
-    Duo {
-        from: palette::Oklch,
-        t: f32,
-        to: palette::Oklch,
-    },
+    Solid(Oklch),
+    Duo { from: Oklch, factor: f32, to: Oklch },
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Accents(Vec<palette::Oklch>);
-
-impl Accents {
-    pub fn find_closest(&self, needle: palette::Oklch) -> Accent {
-        todo!("Accents::find_closest")
+impl Accent {
+    pub fn get(&self) -> Oklch {
+        match self {
+            &Accent::Solid(c) => c,
+            &Accent::Duo {
+                from,
+                factor: t,
+                to,
+            } => from.mix(to, t),
+        }
     }
 }
 
 #[derive(Debug, Clone, PartialEq)]
-pub struct Neutrals(Vec<palette::Oklch>);
+pub struct Accents {
+    tree: ImmutableKdTree<f32, 3>,
+    colors: Vec<Accent>,
+}
+
+impl Accents {
+    pub fn find_closest(&self, needle: Oklch) -> Accent {
+        let Oklch { l, chroma, hue } = needle;
+        let idx = self
+            .tree
+            .approx_nearest_one::<SquaredEuclidean>(&[l, chroma, hue.into_degrees()])
+            .item;
+        let idx: usize = idx.try_into().expect("Not running on a 64 bit platform?");
+
+        *self
+            .colors
+            .get(idx)
+            .expect("Either accents had 0 colors or index out of bound")
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct Neutrals(Vec<Oklch>);
 
 impl Neutrals {
-    pub fn find_closest(&self, needle: palette::Oklch) -> palette::Oklch {
+    pub fn find_closest(&self, needle: Oklch) -> Oklch {
         self.0
             .iter()
             .cloned()

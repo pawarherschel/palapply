@@ -4,9 +4,13 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+bluenoise = "0.2.2"
 facet = "0.46.5"
 facet-json = "0.46.1"
 image = "0.25.10"
 itertools = "0.15.0"
 palette = "0.7.6"
 rayon = "1.12.0"
+rand_pcg = "0.9.0"
+glam = "0.30.10"
+kiddo = "5.3.2"
