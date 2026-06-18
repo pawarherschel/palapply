@@ -76,10 +76,11 @@ fn main() {
             ): (_, Srgba<u8>)| (coord, [red, green, blue, alpha]),
         );
 
-    let image_pixels = image_components.flat_map(|(_, it)| it).collect();
+    let image_pixels = image_components.map(|(_, it)| it).collect::<Vec<_>>();
+    let image_pixels = image_pixels.as_flattened();
 
     println!("Writing image");
-    let image_out = RgbaImage::from_vec(image_width, image_height, image_pixels)
+    let image_out = RgbaImage::from_vec(image_width, image_height, Vec::from(image_pixels))
         .expect("unable to get image buffer from pixel components");
     image_out
         .save({

@@ -1,5 +1,6 @@
 use crate::noise::NoiseMaps;
 use facet::Facet;
+use glam::Vec2;
 use image::Primitive;
 use itertools::Itertools;
 use kiddo::{ImmutableKdTree, KdTree, SquaredEuclidean};
@@ -138,16 +139,26 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
         colors: accent_colors,
     };
 
-    let neutrals = Neutrals(
-        neutrals
-            .into_values()
-            .map(|MyOklch { l, c, h }| Oklch {
-                l,
-                chroma: c,
-                hue: palette::OklabHue::from(h),
-            })
-            .collect(),
-    );
+    let neutral_colors = neutrals
+        .into_values()
+        .map(|MyOklch { l, c, h }| Oklch {
+            l,
+            chroma: c,
+            hue: palette::OklabHue::from(h),
+        })
+        .collect::<Vec<_>>();
+    let neutrals_tree_slice = neutral_colors
+        .iter()
+        .map(|color| {
+            let &Oklch { l, chroma, hue } = color;
+            [l, chroma]
+        })
+        .collect::<Vec<_>>();
+    let accents_tree = ImmutableKdTree::new_from_slice(&neutrals_tree_slice);
+    let neutrals = Neutrals {
+        tree: accents_tree,
+        colors: neutral_colors,
+    };
 
     (accents, neutrals)
 }
@@ -179,36 +190,50 @@ pub struct Accents {
 
 impl Accents {
     pub fn find_closest(&self, needle: Oklch) -> Accent {
-        let Oklch { l, chroma, hue } = needle;
-        let idx = self
-            .tree
-            .approx_nearest_one::<SquaredEuclidean>(&[l, chroma, hue.into_degrees()])
-            .item;
-        let idx: usize = idx.try_into().expect("Not running on a 64 bit platform?");
+        let hue_needle = needle.hue.into_degrees();
+        self.colors
+            .iter()
+            .copied()
+            .min_by(|a, b| {
+                let hue_a = a.get().hue.into_degrees();
+                let hue_b = b.get().hue.into_degrees();
 
-        *self
-            .colors
-            .get(idx)
-            .expect("Either accents had 0 colors or index out of bound")
+                let dist_a = spherical_hue_distance(hue_needle, hue_a);
+                let dist_b = spherical_hue_distance(hue_needle, hue_b);
+
+                dist_a.partial_cmp(&dist_b).expect(&format!(
+                    "Encountered a NaN in Accents::find_closest? dist_a: {dist_a} dist_b: {dist_b}"
+                ))
+            })
+            .expect("Neutrals had 0 colors")
     }
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct Neutrals(Vec<Oklch>);
+fn spherical_hue_distance(hue_a_deg: f32, hue_b_deg: f32) -> f32 {
+    let diff = (hue_a_deg - hue_b_deg).abs();
+
+    diff.min(360.0 - diff)
+}
+
+pub struct Neutrals {
+    tree: ImmutableKdTree<f32, 2>,
+    colors: Vec<Oklch>,
+}
 
 impl Neutrals {
     pub fn find_closest(&self, needle: Oklch) -> Oklch {
-        self.0
-            .iter()
-            .cloned()
-            .min_by(|a, b| {
-                let dist_a = (needle.l - a.l).powi(2) + (needle.chroma - a.chroma).powi(2);
-                let dist_b = (needle.l - b.l).powi(2) + (needle.chroma - b.chroma).powi(2);
+        let query_point = [needle.l, needle.chroma];
 
-                dist_a
-                    .partial_cmp(&dist_b)
-                    .expect("Encountered NaN in Neutrals::find_closest")
-            })
-            .expect("Neutrals had 0 colors")
+        let idx: usize = self
+            .tree
+            .nearest_one::<SquaredEuclidean>(&query_point)
+            .item
+            .try_into()
+            .expect("Not running on a 64bit computer?");
+
+        self.colors
+            .get(idx)
+            .expect("Either neutrals is empty or array index out of bound")
+            .clone()
     }
 }

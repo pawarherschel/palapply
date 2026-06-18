@@ -14,7 +14,10 @@ use std::fs;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 
-pub struct NoiseMaps(Vec<HashSet<IVec2>>, f32);
+pub struct NoiseMaps {
+    layers: Vec<HashSet<IVec2>>,
+    fraction_factor: f32,
+}
 
 impl NoiseMaps {
     pub fn new_par(width: u32, height: u32, fraction_factor: f32) -> Self {
@@ -23,30 +26,55 @@ impl NoiseMaps {
         let w = width as f32 * fraction_factor;
         let h = height as f32 * fraction_factor;
 
-        let mut sets = Vec::new();
+        let mut sets = Vec::with_capacity(10);
         let generated = AtomicU8::new(0);
 
-        sets.push(HashSet::new());
+        let black = HashSet::new();
+        let white = (0..w as u32)
+            .cartesian_product(0..h as u32)
+            .map(|(x, y)| IVec2::new(x as i32, y as i32))
+            .collect::<HashSet<_>>();
+
+        sets.push(black);
         generated.fetch_add(1, Ordering::Relaxed);
         println!(
             "Completed generating map {} of 10",
             generated.load(Ordering::Relaxed)
         );
 
+        fn map_range(value: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32) -> f32 {
+            out_min + (value - in_min) * (out_max - out_min) / (in_max - in_min)
+        }
         let custom_layers = (1..9u8)
             .into_par_iter()
             .map(|layer| {
-                let fraction = f32::from(layer) / 9.0;
+                let layer_f = f32::from(layer);
+                let fraction = map_range(layer_f, 0.0, 9.0, 0.0, 1.0);
 
                 let rng = Pcg64Mcg::seed_from_u64(67);
                 let no_of_samples = w.min(h) * fraction;
-                let mut generator =
-                    WrappingBlueNoise::from_rng(w, h, calculate_min_radius(fraction, w, h), rng);
+
+                let min_radius = calculate_min_radius(fraction, w, h);
+                let (min_radius, invert) = if min_radius < 1.0 {
+                    println!("min_radius < 1.0, inverting");
+                    let fraction = 1.0 - fraction;
+                    (calculate_min_radius(fraction, w, h), true)
+                } else {
+                    (min_radius, false)
+                };
+
+                let mut generator = WrappingBlueNoise::from_rng(w, h, min_radius, rng);
                 let generator = generator.with_samples(no_of_samples as u32);
 
-                let ret = generator
+                let points = generator
                     .map(|Vec2 { x, y }| IVec2::new(x as i32, y as i32))
                     .collect::<HashSet<_>>();
+
+                let ret = if invert {
+                    white.clone().difference(&points).cloned().collect()
+                } else {
+                    points
+                };
                 generated.fetch_add(1, Ordering::Relaxed);
                 println!(
                     "Completed generating map {} of 10",
@@ -57,12 +85,7 @@ impl NoiseMaps {
             .collect::<Vec<_>>();
         sets.extend(custom_layers);
 
-        sets.push(
-            (0..w as u32)
-                .cartesian_product(0..h as u32)
-                .map(|(x, y)| IVec2::new(x as i32, y as i32))
-                .collect(),
-        );
+        sets.push(white);
         generated.fetch_add(1, Ordering::Relaxed);
         println!(
             "Completed generating map {} of 10",
@@ -88,11 +111,14 @@ impl NoiseMaps {
                 .expect("Failed to save noise map image asset");
         }
 
-        Self(sets, fraction_factor)
+        Self {
+            layers: sets,
+            fraction_factor: fraction_factor,
+        }
     }
 
     pub fn get_layer(&self, layer: u8) -> &HashSet<IVec2> {
-        self.0
+        self.layers
             .get(layer as usize)
             .expect("Layer not within the range [0, 10)")
     }
@@ -101,7 +127,10 @@ impl NoiseMaps {
 impl Get for NoiseMaps {
     fn get(&self, factor: f32, coord: IVec2) -> f32 {
         let IVec2 { x, y } = coord;
-        let coord = IVec2::new((x as f32 * self.1) as i32, (y as f32 * self.1) as i32);
+        let coord = IVec2::new(
+            (x as f32 * self.fraction_factor) as i32,
+            (y as f32 * self.fraction_factor) as i32,
+        );
         if self
             .get_layer((factor * 10.0).floor() as u8)
             .contains(&coord)
