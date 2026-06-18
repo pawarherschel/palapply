@@ -11,11 +11,14 @@ use rayon::prelude::IntoParallelIterator;
 use std::collections::HashSet;
 use std::f32::consts;
 use std::fs;
+use std::ops::Index;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 
 pub struct NoiseMaps {
-    layers: Vec<HashSet<IVec2>>,
+    height: f32,
+    width: f32,
+    layers: Vec<Vec<bool>>,
     fraction_factor: f32,
 }
 
@@ -111,13 +114,26 @@ impl NoiseMaps {
                 .expect("Failed to save noise map image asset");
         }
 
+        let layers = sets
+            .into_iter()
+            .map(|set| {
+                (0..w as u32)
+                    .cartesian_product(0..h as u32)
+                    .map(|(x, y)| IVec2::new(x as i32, y as i32))
+                    .map(|coord| set.contains(&coord))
+                    .collect()
+            })
+            .collect();
+
         Self {
-            layers: sets,
-            fraction_factor: fraction_factor,
+            width: w,
+            height: h,
+            layers,
+            fraction_factor,
         }
     }
 
-    pub fn get_layer(&self, layer: u8) -> &HashSet<IVec2> {
+    pub fn get_layer(&self, layer: u8) -> &Vec<bool> {
         self.layers
             .get(layer as usize)
             .expect("Layer not within the range [0, 10)")
@@ -127,13 +143,16 @@ impl NoiseMaps {
 impl Get for NoiseMaps {
     fn get(&self, factor: f32, coord: IVec2) -> f32 {
         let IVec2 { x, y } = coord;
+        let full_width = self.width / self.fraction_factor;
+        let full_height = self.height / self.fraction_factor;
         let coord = IVec2::new(
-            (x as f32 * self.fraction_factor) as i32,
-            (y as f32 * self.fraction_factor) as i32,
+            (x as f32 % full_width) as i32,
+            (y as f32 % full_height) as i32,
         );
         if self
             .get_layer((factor * 10.0).floor() as u8)
-            .contains(&coord)
+            .get((coord.y as f32 * self.width + coord.x as f32).floor() as usize)
+            .is_some()
         {
             1.0
         } else {
