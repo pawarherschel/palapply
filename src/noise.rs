@@ -23,6 +23,44 @@ pub struct NoiseMaps {
 }
 
 impl NoiseMaps {
+    pub fn new_cached(width: u32, height: u32, fraction_factor: f32) -> Self {
+        println!("NoiseMaps::new_cached");
+        let mut layers = Vec::with_capacity(10);
+        let map_width = (width as f32 * fraction_factor) as u32;
+        let map_height = (height as f32 * fraction_factor) as u32;
+        let grid_size = (map_width * map_height) as usize;
+
+        for layer in 0..10 {
+            let file_path = format!("target/maps/{}.png", layer);
+
+            let layer_grid = if let Ok(img) = image::open(&file_path) {
+                let gray_img = img.to_luma8();
+
+                let mut grid = vec![false; grid_size];
+
+                for y in 0..map_height {
+                    for x in 0..map_width {
+                        let pixel = gray_img.get_pixel(x, y);
+                        let index = (y as usize) * (map_width as usize) + (x as usize);
+                        grid[index] = pixel.0[0] > 0;
+                    }
+                }
+                grid
+            } else {
+                panic!("Used NoiseMaps::new_cached but {file_path} wasn't found")
+            };
+
+            layers.push(layer_grid);
+        }
+
+        Self {
+            width: map_width as f32,
+            height: map_height as f32,
+            layers,
+            fraction_factor,
+        }
+    }
+
     pub fn new_par(width: u32, height: u32, fraction_factor: f32) -> Self {
         println!("Generating noise maps");
 
@@ -49,7 +87,8 @@ impl NoiseMaps {
             out_min + (value - in_min) * (out_max - out_min) / (in_max - in_min)
         }
         let custom_layers = (1..9u8)
-            .into_par_iter()
+            // .into_par_iter()
+            .into_iter()
             .map(|layer| {
                 let layer_f = f32::from(layer);
                 let fraction = map_range(layer_f, 0.0, 9.0, 0.0, 1.0);
@@ -59,7 +98,7 @@ impl NoiseMaps {
 
                 let min_radius = calculate_min_radius(fraction, w, h);
                 let (min_radius, invert) = if min_radius < 1.0 {
-                    println!("min_radius < 1.0, inverting");
+                    println!("min_radius < 1.0, inverting layer {layer}");
                     let fraction = 1.0 - fraction;
                     (calculate_min_radius(fraction, w, h), true)
                 } else {
@@ -80,8 +119,10 @@ impl NoiseMaps {
                 };
                 generated.fetch_add(1, Ordering::Relaxed);
                 println!(
-                    "Completed generating map {} of 10",
-                    generated.load(Ordering::Relaxed)
+                    "Completed generating map {} of 10 (w: {w}, h: {h}, layer: {layer}, min_radius: {min_radius}, no_of_samples: {no_of_samples}, ret.len(): {}, %: {}, fraction*100.0: {})",
+                    generated.load(Ordering::Relaxed), ret.len(),
+                    (ret.len() as f32 / white.len() as f32) * 100.0,
+                    fraction * 100.0
                 );
                 ret
             })
@@ -145,16 +186,21 @@ impl Get for NoiseMaps {
         let IVec2 { x, y } = coord;
         let full_width = self.width / self.fraction_factor;
         let full_height = self.height / self.fraction_factor;
-        let coord = IVec2::new(
-            (x as f32 % full_width) as i32,
-            (y as f32 % full_height) as i32,
-        );
-        if self
-            .get_layer((factor * 10.0).floor() as u8)
-            .get((coord.y as f32 * self.width + coord.x as f32).floor() as usize)
-            .is_some()
-        {
-            1.0
+
+        let wrapped_x = (x as f32).rem_euclid(full_width);
+        let wrapped_y = (y as f32).rem_euclid(full_height);
+
+        let target_x = (wrapped_x * self.fraction_factor) as usize;
+        let target_y = (wrapped_y * self.fraction_factor) as usize;
+
+        let grid_x = target_x.min(self.width as usize - 1);
+        let grid_y = target_y.min(self.height as usize - 1);
+
+        let layer_idx = ((factor * 10.0).floor() as usize) as u8;
+        let index = grid_y * (self.width as usize) + grid_x;
+
+        if let Some(&is_active) = self.get_layer(layer_idx).get(index) {
+            if is_active { 1.0 } else { 0.0 }
         } else {
             0.0
         }

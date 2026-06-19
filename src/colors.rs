@@ -103,22 +103,27 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
             chroma: c,
             hue: palette::OklabHue::from(h),
         })
-        .map(|c| Accent::Solid(c))
+        .map(|c| Accent::Solid {
+            color: c,
+            final_degree: c.hue.into_degrees(),
+        })
         .collect::<Vec<_>>();
     let duo_accents = solid_accents
         .iter()
         .cartesian_product(solid_accents.iter())
         .cartesian_product(1..10u8)
         .flat_map(|((a, b), layer)| match (a, b) {
-            (Accent::Solid(a), Accent::Solid(b)) if a != b => {
+            (Accent::Solid { color: a, .. }, Accent::Solid { color: b, .. }) if a != b => {
                 let t = layer as f32 / 10.0;
+                let final_degree = a.mix(*b, t).hue.into_degrees();
                 Some(Accent::Duo {
                     from: *a,
                     factor: t,
                     to: *b,
+                    final_degree,
                 })
             }
-            (Accent::Solid(a), Accent::Solid(b)) if a == b => None,
+            (Accent::Solid { color: a, .. }, Accent::Solid { color: b, .. }) if a == b => None,
             _ => unreachable!(),
         })
         .collect::<Vec<_>>();
@@ -126,16 +131,30 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
         .into_iter()
         .chain(duo_accents.into_iter())
         .collect::<Vec<_>>();
-    let accents_tree_slice = accent_colors
-        .iter()
-        .map(|accent| {
-            let Oklch { l, chroma, hue } = accent.get();
-            [l, chroma, hue.into_degrees()]
+    let hue_lut: [Accent; 360] = (-179..=180i16)
+        .map(|h| {
+            let hue_needle = h as f32;
+            let closest = accent_colors
+                .iter()
+                .min_by(|a, b| {
+                    let hue_a = a.final_degree();
+                    let hue_b = b.get().hue.into_degrees();
+
+                    let dist_a = spherical_hue_distance(hue_needle, hue_a);
+                    let dist_b = spherical_hue_distance(hue_needle, hue_b);
+
+                    dist_a.partial_cmp(&dist_b).unwrap_or_else(|| panic!(
+                    "Encountered a NaN in Accents::find_closest? dist_a: {dist_a} dist_b: {dist_b}"
+                ))
+                })
+                .unwrap();
+
+            *closest
         })
-        .collect::<Vec<_>>();
-    let accents_tree = ImmutableKdTree::new_from_slice(&accents_tree_slice);
+        .collect_array()
+        .expect("Array len != hue lut?");
     let accents = Accents {
-        tree: accents_tree,
+        lut: hue_lut,
         colors: accent_colors,
     };
 
@@ -159,24 +178,43 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
         tree: accents_tree,
         colors: neutral_colors,
     };
+    println!("Finished generating palette");
 
     (accents, neutrals)
 }
 
 #[derive(Debug, Clone, PartialEq, Copy)]
 pub enum Accent {
-    Solid(Oklch),
-    Duo { from: Oklch, factor: f32, to: Oklch },
+    Solid {
+        color: Oklch,
+        final_degree: f32,
+    },
+    Duo {
+        from: Oklch,
+        factor: f32,
+        to: Oklch,
+        final_degree: f32,
+    },
+}
+
+impl Accent {
+    fn final_degree(&self) -> f32 {
+        match *self {
+            Accent::Solid { final_degree, .. } => final_degree,
+            Accent::Duo { final_degree, .. } => final_degree,
+        }
+    }
 }
 
 impl Accent {
     pub fn get(&self) -> Oklch {
         match self {
-            &Accent::Solid(c) => c,
+            &Accent::Solid { color: c, .. } => c,
             &Accent::Duo {
                 from,
                 factor: t,
                 to,
+                ..
             } => from.mix(to, t),
         }
     }
@@ -184,28 +222,17 @@ impl Accent {
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Accents {
-    tree: ImmutableKdTree<f32, 3>,
+    lut: [Accent; 360],
     colors: Vec<Accent>,
 }
 
 impl Accents {
     pub fn find_closest(&self, needle: Oklch) -> Accent {
-        let hue_needle = needle.hue.into_degrees();
-        self.colors
-            .iter()
-            .copied()
-            .min_by(|a, b| {
-                let hue_a = a.get().hue.into_degrees();
-                let hue_b = b.get().hue.into_degrees();
-
-                let dist_a = spherical_hue_distance(hue_needle, hue_a);
-                let dist_b = spherical_hue_distance(hue_needle, hue_b);
-
-                dist_a.partial_cmp(&dist_b).expect(&format!(
-                    "Encountered a NaN in Accents::find_closest? dist_a: {dist_a} dist_b: {dist_b}"
-                ))
-            })
-            .expect("Neutrals had 0 colors")
+        let hue_needle = (needle.hue.into_degrees() as usize + 180) % 360;
+        *self
+            .lut
+            .get(hue_needle)
+            .unwrap_or_else(|| panic!("Hue lookup failed with needle {needle:?}"))
     }
 }
 
