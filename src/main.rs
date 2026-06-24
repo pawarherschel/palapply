@@ -23,6 +23,10 @@ struct Cli {
     input: PathBuf,
     #[arg(short, long)]
     output: PathBuf,
+    #[arg(long)]
+    maps_dir: Option<PathBuf>,
+    #[arg(long, num_args = 2, value_names = ["WIDTH", "HEIGHT"])]
+    genmaps_only: Option<Vec<u32>>,
 }
 
 fn main() {
@@ -37,7 +41,18 @@ fn main() {
     let pixels_len = pixels.len();
 
     let noise_scale = 1.0 / 1.0;
-    
+
+    let maps_folder = cli.maps_dir.unwrap_or_else(|| {
+        cli.output.parent()
+            .unwrap_or_else(|| Path::new("."))
+            .join("maps")
+    });
+
+    if let Some(ref dims) = cli.genmaps_only {
+        NoiseMaps::new_par(dims[0], dims[1], noise_scale, &maps_folder);
+        return;
+    }
+
     let output = pixels
         .into_par_iter()
         .map(|(x, y, image::Rgba([r, g, b, a]))| {
@@ -46,10 +61,6 @@ fn main() {
         })
         .map(|(coord, srgba)| (coord, Srgba::<f32>::from(srgba)))
         .map(|(coord, it)| (coord, Oklcha::from_color(it)));
-
-    let maps_folder = cli.output.parent()
-        .unwrap_or_else(|| Path::new("."))
-        .join("maps");
 
     let get_amount: &(dyn Get + Send + Sync) = if (0..10)
         .map(|layer| maps_folder.join(format!("{}.png", layer)))
