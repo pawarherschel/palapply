@@ -36,6 +36,8 @@ fn main() {
     let pixels = image.pixels().collect::<Vec<_>>();
     let pixels_len = pixels.len();
 
+    let noise_scale = 1.0 / 1.0;
+    
     let output = pixels
         .into_par_iter()
         .map(|(x, y, image::Rgba([r, g, b, a]))| {
@@ -55,9 +57,9 @@ fn main() {
         .map(|file| file.map(|file| file.metadata()).flatten())
         .all(|metadata| metadata.is_ok())
     {
-        &NoiseMaps::new_cached(image_width, image_height, 1.0 / 10.0, &maps_folder)
+        &NoiseMaps::new_cached(image_width, image_height, noise_scale, &maps_folder)
     } else {
-        &NoiseMaps::new_par(image_width, image_height, 1.0 / 10.0, &maps_folder)
+        &NoiseMaps::new_par(image_width, image_height, noise_scale, &maps_folder)
     };
 
     println!("Running fragment pipeline");
