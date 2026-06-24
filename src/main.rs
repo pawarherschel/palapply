@@ -3,12 +3,12 @@ use crate::noise::NoiseMaps;
 use get::Get;
 use glam::IVec2;
 use image::{GenericImageView, RgbaImage};
-use indicatif::ProgressIterator;
 use indicatif::{ParallelProgressIterator, ProgressBar, ProgressStyle};
 use palette::rgb::Rgb;
 use palette::{Alpha, FromColor, IntoColor, Mix, Oklch, Oklcha, Srgba};
-use rayon::prelude::{IntoParallelIterator, ParallelBridge, ParallelIterator};
-use std::path::PathBuf;
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+use clap::Parser;
+use std::path::{Path, PathBuf};
 use std::{fs, time};
 
 mod colors;
@@ -16,16 +16,21 @@ mod dim;
 mod get;
 mod noise;
 
+#[derive(Parser)]
+#[command(version, about = "Catppuccin-themed image posterizer")]
+struct Cli {
+    #[arg(short, long)]
+    input: PathBuf,
+    #[arg(short, long)]
+    output: PathBuf,
+}
+
 fn main() {
-    println!("Hello, world!");
+    let cli = Cli::parse();
 
-    let json_path = PathBuf::from("palette.json");
-    let image_path = PathBuf::from("test.png");
-    let save_folder = PathBuf::from("target");
+    let (accents, neutrals) = colors::extract_colors();
 
-    let (accents, neutrals) = colors::extract_colors(json_path);
-
-    let image = image::open(image_path).expect("Unable to load image");
+    let image = image::open(&cli.input).expect("Unable to load image");
     let (image_width, image_height) = image.dimensions();
 
     let pixels = image.pixels().collect::<Vec<_>>();
@@ -40,15 +45,19 @@ fn main() {
         .map(|(coord, srgba)| (coord, Srgba::<f32>::from(srgba)))
         .map(|(coord, it)| (coord, Oklcha::from_color(it)));
 
+    let maps_folder = cli.output.parent()
+        .unwrap_or_else(|| Path::new("."))
+        .join("maps");
+
     let get_amount: &(dyn Get + Send + Sync) = if (0..10)
-        .map(|layer| format!("target/maps/{}.png", layer))
+        .map(|layer| maps_folder.join(format!("{}.png", layer)))
         .map(|file_name| fs::File::open(file_name))
         .map(|file| file.map(|file| file.metadata()).flatten())
         .all(|metadata| metadata.is_ok())
     {
-        &NoiseMaps::new_cached(image_width, image_height, 1.0 / 10.0)
+        &NoiseMaps::new_cached(image_width, image_height, 1.0 / 10.0, &maps_folder)
     } else {
-        &NoiseMaps::new_par(image_width, image_height, 1.0 / 10.0)
+        &NoiseMaps::new_par(image_width, image_height, 1.0 / 10.0, &maps_folder)
     };
 
     println!("Running fragment pipeline");
@@ -107,12 +116,6 @@ fn main() {
     let image_out = RgbaImage::from_vec(image_width, image_height, Vec::from(image_pixels))
         .expect("unable to get image buffer from pixel components");
     image_out
-        .save({
-            let mut folder = save_folder.clone();
-            folder.push("output.png");
-            folder
-        })
+        .save(&cli.output)
         .expect("failed to save image");
-
-    println!("Goodbye, world!");
 }

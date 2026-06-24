@@ -1,14 +1,10 @@
-use crate::noise::NoiseMaps;
 use facet::Facet;
-use glam::Vec2;
-use image::Primitive;
 use itertools::Itertools;
-use kiddo::{ImmutableKdTree, KdTree, SquaredEuclidean};
-use palette::{GetHue, Mix, Oklch};
+use kiddo::{ImmutableKdTree, SquaredEuclidean};
+use palette::{Mix, Oklch};
 use std::collections::HashMap;
-use std::fs;
-use std::ops::Deref;
-use std::path::Path;
+
+const PALETTE_JSON: &str = include_str!("../palette.json");
 
 #[derive(Facet, Debug, Clone, PartialEq)]
 struct ColorSchemeCollection {
@@ -19,15 +15,12 @@ struct ColorSchemeCollection {
 }
 
 impl ColorSchemeCollection {
-    fn from_json_file(path: impl AsRef<Path>) -> Self {
-        let json = fs::read_to_string(&path).expect("Unable to read file");
-        let res = facet_json::from_str::<Self>(&json);
-        if res.is_err() {
-            let error = res.unwrap_err();
-            panic!("JSON decoding failed because: {error}")
+    fn from_json_str(json: &str) -> Self {
+        let res = facet_json::from_str::<Self>(json);
+        match res {
+            Ok(scheme) => scheme,
+            Err(error) => panic!("JSON decoding failed because: {error}"),
         }
-
-        res.unwrap()
     }
 }
 
@@ -50,10 +43,10 @@ struct MyOklch {
     h: f32,
 }
 
-pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals) {
+pub(crate) fn extract_colors() -> (Accents, Neutrals) {
     println!("Extracting Colors");
 
-    let color_scheme_collection = ColorSchemeCollection::from_json_file(file_path);
+    let color_scheme_collection = ColorSchemeCollection::from_json_str(PALETTE_JSON);
 
     let mut accents = HashMap::new();
     let mut neutrals = HashMap::new();
@@ -169,7 +162,7 @@ pub(crate) fn extract_colors(file_path: impl AsRef<Path>) -> (Accents, Neutrals)
     let neutrals_tree_slice = neutral_colors
         .iter()
         .map(|color| {
-            let &Oklch { l, chroma, hue } = color;
+            let &Oklch { l, chroma, .. } = color;
             [l, chroma]
         })
         .collect::<Vec<_>>();

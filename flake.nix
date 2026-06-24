@@ -28,6 +28,19 @@
           ...
         }:
         {
+          packages.default =
+            let
+              rustPlatform = pkgs.makeRustPlatform {
+                inherit (inputs'.fenix.packages.stable) cargo rustc;
+              };
+            in
+            rustPlatform.buildRustPackage {
+              pname = "palapply";
+              version = "0.1.0";
+              src = ./.;
+              cargoLock.lockFile = ./Cargo.lock;
+              meta.mainProgram = "palapply";
+            };
 
           devenv = {
             shells.default = {

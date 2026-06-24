@@ -6,12 +6,11 @@ use image::{ImageBuffer, Luma};
 use itertools::Itertools;
 use rand_pcg::Pcg64Mcg;
 use rand_pcg::rand_core::SeedableRng;
-use rayon::iter::ParallelIterator;
-use rayon::prelude::IntoParallelIterator;
+use rayon::prelude::{IntoParallelIterator, ParallelIterator};
+
 use std::collections::HashSet;
 use std::f32::consts;
 use std::fs;
-use std::ops::Index;
 use std::path::Path;
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -23,7 +22,7 @@ pub struct NoiseMaps {
 }
 
 impl NoiseMaps {
-    pub fn new_cached(width: u32, height: u32, fraction_factor: f32) -> Self {
+    pub fn new_cached(width: u32, height: u32, fraction_factor: f32, cache_dir: &Path) -> Self {
         println!("NoiseMaps::new_cached");
         let mut layers = Vec::with_capacity(10);
         let map_width = (width as f32 * fraction_factor) as u32;
@@ -31,7 +30,7 @@ impl NoiseMaps {
         let grid_size = (map_width * map_height) as usize;
 
         for layer in 0..10 {
-            let file_path = format!("target/maps/{}.png", layer);
+            let file_path = cache_dir.join(format!("{}.png", layer));
 
             let layer_grid = if let Ok(img) = image::open(&file_path) {
                 let gray_img = img.to_luma8();
@@ -47,7 +46,7 @@ impl NoiseMaps {
                 }
                 grid
             } else {
-                panic!("Used NoiseMaps::new_cached but {file_path} wasn't found")
+                panic!("Used NoiseMaps::new_cached but {} wasn't found", file_path.display())
             };
 
             layers.push(layer_grid);
@@ -61,7 +60,7 @@ impl NoiseMaps {
         }
     }
 
-    pub fn new_par(width: u32, height: u32, fraction_factor: f32) -> Self {
+    pub fn new_par(width: u32, height: u32, fraction_factor: f32, cache_dir: &Path) -> Self {
         println!("Generating noise maps");
 
         let w = width as f32 * fraction_factor;
@@ -87,8 +86,7 @@ impl NoiseMaps {
             out_min + (value - in_min) * (out_max - out_min) / (in_max - in_min)
         }
         let custom_layers = (1..9u8)
-            // .into_par_iter()
-            .into_iter()
+            .into_par_iter()
             .map(|layer| {
                 let layer_f = f32::from(layer);
                 let fraction = map_range(layer_f, 0.0, 9.0, 0.0, 1.0);
@@ -146,10 +144,9 @@ impl NoiseMaps {
                 imgbuf.put_pixel(x, y, Luma([255u8]));
             }
 
-            let dir_path = Path::new("target/maps");
-            fs::create_dir_all(dir_path).expect("Failed to create target/maps directory");
+            fs::create_dir_all(cache_dir).expect("Failed to create noise maps cache directory");
 
-            let file_path = dir_path.join(format!("{}.png", idx));
+            let file_path = cache_dir.join(format!("{}.png", idx));
             imgbuf
                 .save(&file_path)
                 .expect("Failed to save noise map image asset");
